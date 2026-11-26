@@ -35,7 +35,8 @@ def setup_korean_font() -> str | None:
     installed = {font.name for font in font_manager.fontManager.ttflist}
     chosen = next((name for name in KOREAN_FONT_CANDIDATES if name in installed), None)
     if chosen is not None:
-        plt.rcParams["font.family"] = chosen
+        # 한글 폰트에 없는 글자(아래첨자 ₀, ‖ 등)는 matplotlib 기본 폰트 DejaVu Sans로 대신 그린다
+        plt.rcParams["font.family"] = [chosen, "DejaVu Sans"]
     # 한글 폰트에는 수학용 마이너스 기호(−)가 없는 경우가 많아 일반 하이픈(-)으로 그린다
     plt.rcParams["axes.unicode_minus"] = False
     return chosen

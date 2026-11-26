@@ -316,3 +316,189 @@ def plot_transformation(A: np.ndarray, title: str, n_points: int = 100,
     ax.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, -0.09),
               ncol=2, fontsize=9, frameon=False)
     return fig, info
+
+
+# ============================================================
+# 5. 고유값: Power Iteration
+# ============================================================
+def power_iteration(A: np.ndarray, num_iter: int = 1000, tol: float = 1e-6,
+                    v0: np.ndarray | None = None) -> dict:
+    """Power Iteration으로 절댓값이 가장 큰 고유값과 그 고유벡터를 구한다.
+
+    고유값·고유벡터:  A · u = λ · u   (A를 곱해도 방향은 그대로, 길이만 λ배가 되는 u)
+
+    원리: 아무 벡터 v₀를 고유벡터들로 나눠 쓰면 v₀ = c₁u₁ + c₂u₂ + … 이고,
+          A를 k번 곱하면 각 성분이 λᵢ를 k번 곱한 만큼 커진다.
+              Aᵏ v₀ = λ₁ᵏ · ( c₁u₁ + c₂ (λ₂/λ₁)ᵏ u₂ + … )
+          |λ₂/λ₁| < 1 이므로 u₁ 말고 나머지 성분은 반복마다 그 비율만큼 줄어들고,
+          v는 u₁ 방향으로 정렬된다. (비율이 1에 가까울수록 느리다)
+
+    한 번 반복:
+        w = A · v              ← A를 곱한다
+        v ← w / ‖w‖            ← 길이를 1로 맞춘다 (안 하면 λ₁ᵏ 때문에 숫자가 폭발하거나 0이 된다)
+        λ ← vᵀ · A · v          ← Rayleigh 몫. v가 고유벡터면 vᵀ(λv) = λ‖v‖² = λ
+
+    멈춤 조건: 벡터 변화량 ‖v_new − v‖ < tol.
+        λ < 0이면 v의 부호가 매번 뒤집히므로 min(‖v_new − v‖, ‖v_new + v‖)로 잰다.
+        고유값 변화량으로 멈추지 않는 이유: 고유값은 벡터보다 약 2배 빨리 수렴해서
+        A=[[4,1],[1,3]]이면 12회에 멈추고 벡터의 소수점 4번째 자리가 틀린다 (벡터 기준은 21회).
+
+    Args:
+        A: shape (n, n) 정사각 행렬.
+        num_iter: 최대 반복 횟수.
+        tol: 멈춤 기준 (벡터 변화량).
+        v0: 시작 벡터. None이면 np.random.randn(n) (시드는 호출하는 쪽에서 고정).
+            시작 벡터가 u₁과 정확히 직각(c₁ = 0)이면 u₁을 찾지 못하지만, 무작위 벡터는 거의 그럴 일이 없다.
+
+    Returns:
+        dict
+          - eigenvalue: 고유값 λ₁ (Rayleigh 몫)
+          - eigenvector: 단위 고유벡터 u₁ (절댓값이 가장 큰 성분이 양수가 되도록 부호 정리)
+          - n_iter: 실제 반복 횟수
+          - converged: tol 안에 들어왔는지
+          - history_vectors: shape (n_iter + 1, n), v₀부터 매 반복의 v
+          - history_eigenvalues: shape (n_iter + 1,), 매 반복의 λ 추정값
+          - history_deltas: shape (n_iter,), 매 반복의 벡터 변화량
+
+    Raises:
+        ValueError: A가 정사각 행렬이 아니거나, v0가 영벡터이거나, A·v가 영벡터가 될 때.
+    """
+    A = np.asarray(A, dtype=float)
+    if A.ndim != 2 or A.shape[0] != A.shape[1]:
+        raise ValueError(f"A는 정사각 행렬이어야 합니다. 받은 shape: {A.shape}")
+    n = A.shape[0]
+
+    v = np.random.randn(n) if v0 is None else np.asarray(v0, dtype=float).copy()
+    if np.linalg.norm(v) == 0:
+        raise ValueError("시작 벡터가 영벡터입니다.")
+    v = v / np.linalg.norm(v)                  # 길이 1로 시작
+    lam = float(v @ A @ v)                     # 시작 벡터의 Rayleigh 몫
+
+    vectors, eigenvalues, deltas = [v.copy()], [lam], []
+    converged = False
+    for _ in range(num_iter):
+        w = A @ v                              # (n, n) @ (n,) → (n,)
+        w_norm = np.linalg.norm(w)
+        if w_norm == 0:
+            raise ValueError("A·v가 영벡터가 되었습니다 (v가 고유값 0의 방향).")
+        v_new = w / w_norm                     # 길이 1로 맞추기
+        delta = min(np.linalg.norm(v_new - v), np.linalg.norm(v_new + v))  # 부호 뒤집힘은 같은 방향으로 본다
+        v = v_new
+        lam = float(v @ A @ v)                 # λ ≈ vᵀ A v
+        vectors.append(v.copy())
+        eigenvalues.append(lam)
+        deltas.append(delta)
+        if delta < tol:
+            converged = True
+            break
+
+    v_out = v * np.sign(v[np.argmax(np.abs(v))])   # 부호 정리: 가장 큰 성분을 양수로
+    return {
+        "eigenvalue": lam,
+        "eigenvector": v_out,
+        "n_iter": len(deltas),
+        "converged": converged,
+        "history_vectors": np.array(vectors),
+        "history_eigenvalues": np.array(eigenvalues),
+        "history_deltas": np.array(deltas),
+    }
+
+
+def plot_power_iteration(A: np.ndarray, result: dict, n_show: int = 6, tol: float = 1e-6) -> plt.Figure:
+    """2×2 행렬의 Power Iteration 과정을 세 칸 그림으로 보여 준다.
+
+    ① 단위 원 확대: v₀, v₁, v₂ … 화살표가 최대 고유벡터 방향(점선)으로 모여 드는 모습.
+    ② 고유값 추정값 λ_k = v_k · (A v_k) 가 λ₁으로 다가가는 모습.
+    ③ 벡터 변화량 ‖v_k − v_(k−1)‖ (로그 눈금). 반복마다 거의 일정한 비율 |λ₂/λ₁|로 줄어
+       멈춤 기준 tol 아래로 내려가면 멈춘다.
+       2×2에서는 λ₁ + λ₂ = trace(A) (대각합)이므로 λ₂ = trace(A) − λ₁로 구한다.
+
+    Args:
+        A: shape (2, 2) 행렬.
+        result: power_iteration(A)의 반환값.
+        n_show: ①에 그릴 반복 화살표 개수 (v₀ 포함 n_show + 1개).
+        tol: ③에 그릴 멈춤 기준선.
+
+    Returns:
+        Figure.
+    """
+    from matplotlib.ticker import FuncFormatter, MaxNLocator
+
+    A = np.asarray(A, dtype=float)
+    if A.shape != (2, 2):
+        raise ValueError("plot_power_iteration은 2×2 행렬만 그립니다.")
+    lam1, u1 = result["eigenvalue"], result["eigenvector"]
+    lam2 = float(np.trace(A)) - lam1                     # λ₁ + λ₂ = 대각합
+    ratio = abs(lam2 / lam1)
+    n_iter = result["n_iter"]
+
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(17, 5.4),
+                                        gridspec_kw={"width_ratios": [1, 1, 1.1]})
+
+    # ---------- ① 화살표가 고유벡터 방향으로 모인다 (단위 원 확대) ----------
+    circle = unit_circle(400)
+    ax1.plot(*circle, color="#2F6DB5", lw=1.3, alpha=0.7)
+    u1_angle = np.degrees(np.arctan2(u1[1], u1[0]))
+    ax1.plot([0, u1[0] * 1.32], [0, u1[1] * 1.32], color="#15232B", lw=1.2, ls="--")
+    ax1.text(*(u1 * 1.36), f"u₁ ({u1_angle:.1f}°)\n최대 고유벡터", fontsize=9, color="#15232B",
+             ha="left", va="center")
+
+    vecs = result["history_vectors"][: n_show + 1]
+    colors = plt.cm.Greens(np.linspace(0.35, 1.0, len(vecs)))
+    for k, (vec, color) in enumerate(zip(vecs, colors)):
+        vec = vec * np.sign(vec @ u1) if vec @ u1 != 0 else vec   # λ < 0이면 부호가 뒤집히므로 같은 쪽으로
+        ax1.annotate("", xy=vec, xytext=(0, 0), arrowprops=dict(arrowstyle="-|>", color=color, lw=1.8))
+        angle = np.degrees(np.arctan2(vec[1], vec[0]))
+        if k <= 3:   # 뒤쪽 화살표는 u₁ 근처에 몰려 라벨이 겹치므로 앞 4개만 이름표
+            ax1.text(*(vec * 1.08), f"v{k}  {angle:.1f}°", fontsize=9, color=color,
+                     ha="left", va="center", fontweight="bold")
+    last = vecs[-1] * np.sign(vecs[-1] @ u1)
+    ax1.text(*(last * 0.55 + np.array([-0.05, 0.08])), f"v4 ~ v{len(vecs) - 1}", fontsize=8.5,
+             color=colors[-1], ha="right", va="bottom")
+
+    ax1.set_xlim(-0.35, 1.75)
+    ax1.set_ylim(-0.6, 1.05)
+    ax1.set_aspect("equal")
+    ax1.axhline(0, color="#56676F", lw=0.6)
+    ax1.axvline(0, color="#56676F", lw=0.6)
+    ax1.set_title("① A 곱하기 → 길이 1로 맞추기를 반복하면\n화살표가 최대 고유벡터 방향으로 모인다", fontsize=11)
+    ax1.set_xlabel("x  (파란 곡선 = 단위 원: v는 늘 길이 1)")
+    ax1.set_ylabel("y")
+
+    # ---------- ② 고유값 추정값이 λ₁으로 다가간다 ----------
+    lams = result["history_eigenvalues"]
+    ks_all = np.arange(len(lams))
+    ax2.plot(ks_all, lams, "o-", color="#1D6B74", ms=4, lw=1.6, label="추정값 λ_k = v_k · (A v_k)")
+    ax2.axhline(lam1, color="#C8423A", lw=1.2, ls="--", label=f"최종 λ₁ = {lam1:.4f}")
+    for k in range(min(4, len(lams))):
+        ax2.annotate(f"{lams[k]:.4f}", (k, lams[k]), textcoords="offset points", xytext=(8, -12),
+                     fontsize=8.5, color="#56676F")
+    ax2.xaxis.set_major_locator(MaxNLocator(integer=True))
+    ax2.set_title("② 고유값 추정값은 몇 번 만에\n거의 다 맞는다", fontsize=11)
+    ax2.set_xlabel("반복 횟수 k")
+    ax2.set_ylabel("고유값 추정값")
+    ax2.grid(True, color="#D9E2E6", lw=0.6)
+    ax2.legend(fontsize=9, loc="lower right")
+
+    # ---------- ③ 변화량이 일정한 비율로 줄어든다 ----------
+    deltas = result["history_deltas"]
+    ks = np.arange(1, len(deltas) + 1)
+    ax3.semilogy(ks, deltas, "o-", color="#1D6B74", ms=4, lw=1.6, label="벡터 변화량 ‖v_k − v_(k−1)‖")
+    ax3.semilogy(ks, deltas[0] * ratio ** (ks - 1), ":", color="#9A6514", lw=1.8,
+                 label=f"이론: 매번 |λ₂/λ₁| = {ratio:.4f}배")
+    ax3.axhline(tol, color="#C8423A", lw=1.2, ls="--", label=f"멈춤 기준 tol = {tol:g}")
+    ax3.axvline(n_iter, color="#7A858B", lw=0.8)
+    ax3.text(n_iter - 0.4, deltas[0], f"{n_iter}회에 멈춤", fontsize=9, color="#56676F", ha="right", va="top")
+    ax3.yaxis.set_major_formatter(FuncFormatter(lambda y, _: f"1e{int(round(np.log10(y)))}"))
+    ax3.xaxis.set_major_locator(MaxNLocator(integer=True))
+    ax3.set_title(f"③ 변화량은 매번 약 {ratio:.2f}배로 줄어든다\n"
+                  f"(λ₂ = trace(A) − λ₁ = {lam2:.4f})", fontsize=11)
+    ax3.set_xlabel("반복 횟수 k")
+    ax3.set_ylabel("벡터 변화량 (로그 눈금)")
+    ax3.grid(True, which="major", color="#D9E2E6", lw=0.6)
+    ax3.legend(fontsize=9, loc="lower left")
+
+    fig.suptitle(f"Power Iteration: A = {A.tolist()}  →  λ₁ = {lam1:.4f}, "
+                 f"u₁ = [{u1[0]:.4f}, {u1[1]:.4f}]  ({n_iter}회, tol = {tol:g})", fontsize=13, y=1.02)
+    fig.tight_layout()
+    return fig

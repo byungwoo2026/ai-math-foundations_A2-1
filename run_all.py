@@ -63,6 +63,62 @@ def run_step1() -> None:
               f"(원 넓이 π 기준이면 {info['ratio_vs_pi']:.4f}, 오차 {info['error_vs_pi_pct']:.3f}%)")
 
 
+# ============================================================
+# Step 2. Power Iteration
+# ============================================================
+def verify_with_eig(A: np.ndarray) -> tuple[float, np.ndarray]:
+    """[검증 전용] np.linalg.eig로 절댓값이 가장 큰 고유값과 고유벡터를 구한다.
+
+    과제 규칙: np.linalg.eig는 Power Iteration 결과와 비교하는 검증 코드에서만 쓴다.
+    그래서 src/ 모듈이 아니라 이 실행 파일 안에만 둔다.
+
+    Args:
+        A: 정사각 행렬.
+
+    Returns:
+        (고유값, 단위 고유벡터). 고유벡터 부호는 power_iteration과 같게 가장 큰 성분을 양수로.
+    """
+    values, vectors = np.linalg.eig(A)
+    i = int(np.argmax(np.abs(values)))          # Power Iteration이 찾는 것 = 절댓값 최대
+    u = vectors[:, i].real
+    u = u / np.linalg.norm(u)
+    u = u * np.sign(u[np.argmax(np.abs(u))])
+    return float(values[i].real), u
+
+
+def run_step2() -> None:
+    """Power Iteration 그림을 저장하고, 고유값이 np.linalg.eig와 5% 이내로 맞는지 확인한다."""
+    print("\n[Step 2] Power Iteration vs np.linalg.eig (고유값 오차 5% 이내)")
+    np.random.seed(42)  # 이 Step만 따로 돌려도 시작 벡터가 같도록 다시 고정
+
+    A = np.array([[4.0, 1.0], [1.0, 3.0]])
+    main_result = la.power_iteration(A, tol=1e-6)
+    fig = la.plot_power_iteration(A, main_result)
+    path = save_figure(fig, "power_iteration.png")
+    plt.close(fig)
+    print(f"  그림 저장: outputs/{path.name}")
+
+    B = np.random.randn(5, 5)
+    cases = [
+        ("[[4,1],[1,3]] (과제 예시, 대칭)", A, main_result),
+        ("3×3 [[2,-1,0],[-1,2,-1],[0,-1,2]]", np.array([[2.0, -1, 0], [-1, 2, -1], [0, -1, 2]]), None),
+        ("[[1,2],[3,4]] (비대칭)", np.array([[1.0, 2.0], [3.0, 4.0]]), None),
+        ("5×5 무작위 대칭 (최대 고유값이 음수)", (B + B.T) / 2, None),
+    ]
+    for name, M, result in cases:
+        if result is None:
+            result = la.power_iteration(M, tol=1e-6)
+        lam_eig, u_eig = verify_with_eig(M)
+        err_pct = abs(result["eigenvalue"] - lam_eig) / abs(lam_eig) * 100
+        cos = abs(float(result["eigenvector"] @ u_eig))   # 방향 일치도: 1이면 같은 방향
+        print(f"  {name}")
+        print(f"    Power Iteration (수렴 {result['n_iter']}회, tol=1e-6): "
+              f"λ={result['eigenvalue']:.4f}, v={np.round(result['eigenvector'], 4).tolist()}")
+        print(f"    np.linalg.eig  : λ={lam_eig:.4f}, v={np.round(u_eig, 4).tolist()}")
+        check(f"{name} 고유값", result["converged"] and err_pct <= 5,
+              f"오차 {err_pct:.2e}% (기준 5%), 고유벡터 방향 일치도 |cos| = {cos:.8f}")
+
+
 def main() -> int:
     """모든 Step을 차례로 실행하고 통과 개수를 요약한다.
 
@@ -73,6 +129,7 @@ def main() -> int:
     print(f"한글 폰트: {font or '없음 (그림의 한글이 깨질 수 있음)'}")
 
     run_step1()
+    run_step2()
 
     n_pass = sum(passed for _, passed in RESULTS)
     print(f"\n전체: {n_pass}/{len(RESULTS)} 통과")
