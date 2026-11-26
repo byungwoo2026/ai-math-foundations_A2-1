@@ -15,6 +15,7 @@ matplotlib.use("Agg")  # 창을 띄우지 않고 파일로만 저장 (터미널�
 import matplotlib.pyplot as plt
 import numpy as np
 
+from src import calculus as cal
 from src import linear_algebra as la
 from src.plot_utils import save_figure, setup_korean_font
 
@@ -161,6 +162,63 @@ def run_step3() -> None:
           f"{sigma1_svd:.6f} vs {sigma1_power:.6f}, 상대 오차 {rel:.1e}")
 
 
+# ============================================================
+# Step 4. 수치 미분과 Gradient
+# ============================================================
+def bowl(p: np.ndarray) -> np.ndarray:
+    """f(x, y) = x² + y²  (좌표를 첫 번째 축에 담은 배열을 받는다)."""
+    return p[0] ** 2 + p[1] ** 2
+
+
+def ellipse_bowl(p: np.ndarray) -> np.ndarray:
+    """f(x, y) = x² + 10y²  (Step 6에서 Momentum 비교에 쓰는 길쭉한 그릇)."""
+    return p[0] ** 2 + 10 * p[1] ** 2
+
+
+def run_step4() -> None:
+    """수치 미분 오차를 확인하고, 등고선 + Gradient 화살표 그림을 저장한다."""
+    print("\n[Step 4] 수치 미분(중심차분)과 Gradient")
+
+    # (1) f(x) = x², x = 3 → 해석적 미분 2x = 6
+    value = cal.numerical_derivative(lambda x: x ** 2, 3.0, h=1e-5)
+    check("f(x)=x²의 x=3 수치 미분 vs 6", abs(value - 6) <= 1e-4,
+          f"{value:.12f}, 오차 {abs(value - 6):.1e} (기준 1e-4)")
+    forward = cal.forward_derivative(lambda x: x ** 2, 3.0, h=1e-5)
+    tiny = cal.numerical_derivative(lambda x: x ** 2, 3.0, h=1e-12)
+    print(f"    참고: 전방차분(h=1e-5) 오차 {abs(forward - 6):.1e}, "
+          f"중심차분인데 h=1e-12로 너무 작으면 오차 {abs(tiny - 6):.1e} (기준 초과)")
+
+    fig = cal.plot_derivative_error()
+    save_figure(fig, "derivative_error.png")
+    plt.close(fig)
+    print("  그림 저장: outputs/derivative_error.png")
+
+    # (2) f(x, y) = x² + y²: 등고선 f = 1, 4, 9 위 18개 점
+    points = cal.points_on_levels([1, 4, 9], [4, 6, 8], b=1.0, offset_deg=22.5)
+    fig, info = cal.plot_gradient_field(bowl, points, "f(x, y) = x² + y²: Gradient는 등고선과 직각",
+                                        xlim=(-4.2, 4.2), ylim=(-4.2, 4.2), arrow_len=0.6)
+    save_figure(fig, "gradient_field.png")
+    plt.close(fig)
+    print("  그림 저장: outputs/gradient_field.png")
+
+    exact = 2 * points                                        # 해석적 Gradient (2x, 2y)
+    grad_err = float(np.max(np.abs(info["gradients"] - exact)))
+    check("수치 Gradient vs 해석적 (2x, 2y)", grad_err <= 1e-6, f"점 {points.shape[1]}개, 최대 오차 {grad_err:.1e}")
+    check("Gradient ⟂ 등고선 (x² + y²)", info["max_angle_error"] <= 0.1,
+          f"각도 평균 {info['angles'].mean():.4f}°, 90°와 최대 차이 {info['max_angle_error']:.1e}°")
+
+    # (3) 미리보기: 길쭉한 그릇 x² + 10y² (Step 6)
+    points_e = cal.points_on_levels([1, 4, 9], [4, 8, 10], b=10.0, offset_deg=15)
+    fig, info_e = cal.plot_gradient_field(ellipse_bowl, points_e,
+                                          "f(x, y) = x² + 10y²: 여기서도 직각이지만, 화살표가 중심을 향하지 않는다",
+                                          xlim=(-4.2, 4.2), ylim=(-1.9, 1.9), arrow_len=0.55, show_to_center=True)
+    save_figure(fig, "gradient_field_ellipse.png")
+    plt.close(fig)
+    print("  그림 저장: outputs/gradient_field_ellipse.png")
+    check("Gradient ⟂ 등고선 (x² + 10y², 추가 확인)", info_e["max_angle_error"] <= 0.1,
+          f"각도 평균 {info_e['angles'].mean():.4f}°, 90°와 최대 차이 {info_e['max_angle_error']:.1e}°")
+
+
 def main() -> int:
     """모든 Step을 차례로 실행하고 통과 개수를 요약한다.
 
@@ -173,6 +231,7 @@ def main() -> int:
     run_step1()
     run_step2()
     run_step3()
+    run_step4()
 
     n_pass = sum(passed for _, passed in RESULTS)
     print(f"\n전체: {n_pass}/{len(RESULTS)} 통과")
