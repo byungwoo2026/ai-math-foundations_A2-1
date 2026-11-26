@@ -502,3 +502,234 @@ def plot_power_iteration(A: np.ndarray, result: dict, n_show: int = 6, tol: floa
                  f"u₁ = [{u1[0]:.4f}, {u1[1]:.4f}]  ({n_iter}회, tol = {tol:g})", fontsize=13, y=1.02)
     fig.tight_layout()
     return fig
+
+
+# ============================================================
+# 6. SVD 이미지 압축
+# ============================================================
+LUMA_WEIGHTS = np.array([0.299, 0.587, 0.114])   # 흑백 변환 가중치 (ITU-R BT.601: 사람 눈은 초록에 가장 민감)
+
+
+def load_grayscale_image(path: str | None = None, size: int = 128) -> np.ndarray:
+    """이미지를 읽어 size×size 흑백 배열(0~1 실수)로 만든다.
+
+    처리 순서:
+      ① 읽기: path가 None이면 matplotlib에 들어 있는 공개 도메인 사진 grace_hopper.jpg
+         (미 해군 공식 초상, 600×512 컬러)를 쓴다. 따로 내려받을 필요가 없어 어디서나 재현된다.
+      ② 0~1로: 정수(uint8, 0~255)면 255로 나눈다.
+      ③ 흑백:  밝기 = 0.299·R + 0.587·G + 0.114·B        (H, W, 3) → (H, W)
+      ④ 가운데 정사각형 자르기: 짧은 변 길이에 맞춘다. (600×512 → 512×512)
+      ⑤ 블록 평균 축소: f×f 픽셀의 평균을 1픽셀로. (512 ÷ 128 = 4 → 4×4 평균)
+            (s, s) → reshape (size, f, size, f) → 1·3번 축 평균 → (size, size)
+
+    Args:
+        path: 이미지 파일 경로. None이면 내장 사진.
+        size: 결과 한 변 길이 (픽셀).
+
+    Returns:
+        shape (size, size), 값 범위 0~1인 float 배열.
+
+    Raises:
+        ValueError: 이미지가 size보다 작을 때 (확대는 하지 않는다).
+    """
+    import matplotlib.image as mpimg
+    from matplotlib import cbook
+
+    if path is None:
+        with cbook.get_sample_data("grace_hopper.jpg") as f:
+            img = mpimg.imread(f)
+    else:
+        img = mpimg.imread(path)
+
+    img = img.astype(float)
+    if img.max() > 1.0:                                  # ② 0~255 정수 → 0~1
+        img = img / 255.0
+    if img.ndim == 3:                                    # ③ 컬러 → 흑백 (알파 채널이 있으면 버림)
+        img = img[..., :3] @ LUMA_WEIGHTS                # (H, W, 3) @ (3,) → (H, W)
+
+    h, w = img.shape
+    side = min(h, w)
+    if side < size:
+        raise ValueError(f"이미지({h}×{w})가 요청 크기 {size}보다 작습니다.")
+    f = side // size                                     # 블록 한 변 (512 // 128 = 4)
+    side = f * size                                      # 나누어떨어지게 맞춘 한 변
+    top, left = (h - side) // 2, (w - side) // 2         # ④ 가운데 자르기
+    img = img[top:top + side, left:left + side]
+    return img.reshape(size, f, size, f).mean(axis=(1, 3))   # ⑤ 블록 평균 → (size, size)
+
+
+def svd_compress(image: np.ndarray, k: int) -> dict:
+    """SVD의 앞 k개 성분만으로 이미지를 복원한다.
+
+    SVD:  A = U · Σ · Vᵀ = σ₁·u₁v₁ᵀ + σ₂·u₂v₂ᵀ + … + σ_r·u_rv_rᵀ      (σ₁ ≥ σ₂ ≥ … ≥ 0)
+          각 σᵢ·uᵢvᵢᵀ는 "세로 패턴 uᵢ × 가로 패턴 vᵢ"로 만든 한 장의 층(rank-1 행렬).
+    압축: A_k = σ₁·u₁v₁ᵀ + … + σ_k·u_kv_kᵀ = U[:, :k] · diag(σ[:k]) · Vᵀ[:k, :]
+          shape: (m, k) · (k, k) · (k, n) → (m, n)
+    저장할 숫자: 원본 m·n개  vs  압축 k·(m + n + 1)개 (u 열 k개 + v 행 k개 + σ k개)
+    복원 오차:   ‖A − A_k‖_F / ‖A‖_F  (모든 픽셀 차이의 제곱합의 제곱근, 원본 대비)
+               = √(버린 σᵢ²의 합 / 전체 σᵢ²의 합)       ← Eckart–Young 정리
+    에너지 보존: 남긴 σᵢ²의 합 / 전체 σᵢ²의 합
+
+    np.linalg.svd는 NumPy 함수라 허용된다 (과제가 금지한 것은 고유값 계산에 eig를 쓰는 것).
+
+    Args:
+        image: shape (m, n) 흑백 이미지.
+        k: 남길 성분 개수. 최대 r = min(m, n)개까지만 있으므로 넘으면 r로 잘린다.
+
+    Returns:
+        dict
+          - reconstruction: 복원 이미지 (m, n). 0~1 밖의 값이 조금 생길 수 있다 (그릴 때 잘라서 표시).
+          - k_requested, k_used, rank_max: 요청 k, 실제 쓴 k, 최대 성분 수 r
+          - original_numbers, stored_numbers, storage_ratio: 원본·압축 저장 숫자 개수와 비율
+          - relative_error: ‖A − A_k‖_F / ‖A‖_F (직접 계산)
+          - relative_error_from_sigma: √(버린 σ² 합 / 전체 σ² 합) (공식)
+          - energy: 남긴 σ² 합 / 전체 σ² 합
+          - singular_values: 전체 σ (r,)
+    """
+    A = np.asarray(image, dtype=float)
+    if A.ndim != 2:
+        raise ValueError(f"흑백 이미지(2차원)만 받습니다. 받은 shape: {A.shape}")
+    if k < 1:
+        raise ValueError("k는 1 이상이어야 합니다.")
+    m, n = A.shape
+
+    U, s, Vt = np.linalg.svd(A, full_matrices=False)   # U (m, r), s (r,), Vt (r, n), r = min(m, n)
+    r = len(s)
+    k_used = min(k, r)
+
+    A_k = (U[:, :k_used] * s[:k_used]) @ Vt[:k_used, :]  # U·diag(σ)는 U의 각 열에 σ를 곱한 것과 같다
+    energy_total = np.sum(s ** 2)
+    return {
+        "reconstruction": A_k,
+        "k_requested": k,
+        "k_used": k_used,
+        "rank_max": r,
+        "original_numbers": m * n,
+        "stored_numbers": k_used * (m + n + 1),
+        "storage_ratio": k_used * (m + n + 1) / (m * n),
+        "relative_error": float(np.linalg.norm(A - A_k) / np.linalg.norm(A)),
+        "relative_error_from_sigma": float(np.sqrt(np.sum(s[k_used:] ** 2) / energy_total)),
+        "energy": float(np.sum(s[:k_used] ** 2) / energy_total),
+        "singular_values": s,
+    }
+
+
+def plot_svd_compression(image: np.ndarray, ks: tuple[int, ...] = (10, 50, 100)) -> plt.Figure:
+    """원본과 k개 성분 복원 결과들을 한 Figure에 나란히 그린다 (과제 필수 그림).
+
+    각 칸 제목에 저장 숫자 개수(원본 대비 %)와 복원 오차·에너지 보존율을 적는다.
+
+    Args:
+        image: shape (m, n) 흑백 이미지 (0~1).
+        ks: 비교할 k 값들.
+
+    Returns:
+        Figure.
+    """
+    m, n = image.shape
+    fig, axes = plt.subplots(1, len(ks) + 1, figsize=(4.0 * (len(ks) + 1), 4.9))
+    axes[0].imshow(image, cmap="gray", vmin=0, vmax=1, interpolation="nearest")
+    axes[0].set_title(f"원본 {m}×{n}\n저장 숫자 {m * n:,}개", fontsize=11)
+
+    for ax, k in zip(axes[1:], ks):
+        res = svd_compress(image, k)
+        ax.imshow(np.clip(res["reconstruction"], 0, 1), cmap="gray", vmin=0, vmax=1, interpolation="nearest")
+        note = " ← 원본보다 많음" if res["storage_ratio"] > 1 else ""
+        ax.set_title(f"k = {res['k_used']}\n저장 {res['stored_numbers']:,}개 (원본의 {res['storage_ratio']:.1%}){note}\n"
+                     f"오차 {res['relative_error']:.2%} · 에너지 {res['energy']:.3%}", fontsize=10.5)
+    for ax in axes:
+        ax.set_xticks([])
+        ax.set_yticks([])
+    fig.suptitle("SVD 이미지 압축: 앞 k개 층만 남겨 복원", fontsize=13, y=1.03)
+    fig.tight_layout()
+    return fig
+
+
+def plot_svd_layers(image: np.ndarray, n_layers: int = 5) -> plt.Figure:
+    """SVD의 층 σᵢ·uᵢvᵢᵀ 하나하나와, 앞에서부터 쌓은 결과를 두 줄로 보여 준다.
+
+    위 줄: i번째 층 하나 (양수 빨강·음수 파랑. 층에는 음수도 있다: 앞 층을 고치는 보정값)
+    아래 줄: 1번 ~ i번 층을 더한 결과 = A_i
+
+    Args:
+        image: shape (m, n) 흑백 이미지.
+        n_layers: 보여 줄 층 개수.
+
+    Returns:
+        Figure.
+    """
+    U, s, Vt = np.linalg.svd(np.asarray(image, dtype=float), full_matrices=False)
+    fig, axes = plt.subplots(2, n_layers, figsize=(2.9 * n_layers, 6.4))
+    running = np.zeros_like(image, dtype=float)
+    for i in range(n_layers):
+        layer = s[i] * np.outer(U[:, i], Vt[i, :])     # σᵢ · uᵢ vᵢᵀ: (m,) 바깥곱 (n,) → (m, n)
+        running = running + layer
+        lim = np.abs(layer).max()
+        axes[0, i].imshow(layer, cmap="RdBu_r", vmin=-lim, vmax=lim, interpolation="nearest")
+        axes[0, i].set_title(f"{i + 1}번 층 (σ{i + 1} = {s[i]:.2f})", fontsize=10)
+        axes[1, i].imshow(np.clip(running, 0, 1), cmap="gray", vmin=0, vmax=1, interpolation="nearest")
+        axes[1, i].set_title(f"1~{i + 1}번 층 합 (k = {i + 1})", fontsize=10)
+    for ax in axes.ravel():
+        ax.set_xticks([])
+        ax.set_yticks([])
+    axes[0, 0].set_ylabel("층 하나\n(빨강 +, 파랑 −)", fontsize=10)
+    axes[1, 0].set_ylabel("앞에서부터 쌓기", fontsize=10)
+    fig.suptitle("SVD = 중요한 순서로 쌓은 층: 층 하나는 '세로 패턴 u × 가로 패턴 v'", fontsize=13, y=1.0)
+    fig.tight_layout()
+    return fig
+
+
+def plot_singular_values(image: np.ndarray, ks: tuple[int, ...] = (10, 50, 100)) -> plt.Figure:
+    """특이값 크기와, k에 따른 복원 오차·저장 비율을 그린다.
+
+    왼쪽: σᵢ (로그 눈금). 앞쪽 몇 개가 압도적으로 크고 뒤로 갈수록 작아진다 → 앞 k개만 남겨도 되는 이유.
+    오른쪽: k마다 복원 오차(%)와 저장 비율(원본 대비 %).
+            저장 비율 = k(m + n + 1) / (m·n) 이 100%를 넘는 k부터는 압축이 아니다.
+
+    Args:
+        image: shape (m, n) 흑백 이미지.
+        ks: 표시할 k 값들.
+
+    Returns:
+        Figure.
+    """
+    from matplotlib.ticker import FuncFormatter
+
+    A = np.asarray(image, dtype=float)
+    m, n = A.shape
+    s = np.linalg.svd(A, compute_uv=False)            # 특이값만 (r,)
+    r = len(s)
+    k_all = np.arange(1, r + 1)
+    tail = np.sqrt(np.maximum(np.sum(s ** 2) - np.cumsum(s ** 2), 0) / np.sum(s ** 2))  # k개 남겼을 때 오차
+    storage = k_all * (m + n + 1) / (m * n)
+    breakeven = m * n / (m + n + 1)                     # 저장 비율이 100%가 되는 k
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 4.8))
+    ax1.semilogy(k_all, s, color="#1D6B74", lw=1.8)
+    for k in ks:
+        ax1.axvline(min(k, r), color="#9A6514", lw=0.9, ls="--")
+        ax1.text(min(k, r), s[0], f" k={k}", color="#9A6514", fontsize=9, va="top")
+    ax1.yaxis.set_major_formatter(FuncFormatter(lambda y, _: f"{y:g}"))
+    ax1.set_title(f"특이값 σ: 1번 = {s[0]:.1f}, 10번 = {s[9]:.2f}, 마지막({r}번) = {s[-1]:.4f}", fontsize=11)
+    ax1.set_xlabel("성분 번호 i")
+    ax1.set_ylabel("특이값 σᵢ (로그 눈금)")
+    ax1.grid(True, color="#D9E2E6", lw=0.6)
+
+    ax2.plot(k_all, tail * 100, color="#C8423A", lw=1.8, label="복원 오차 ‖A − A_k‖ / ‖A‖")
+    ax2.plot(k_all, storage * 100, color="#2F6DB5", lw=1.8, label="저장 숫자 (원본 대비)")
+    ax2.axhline(100, color="#7A858B", lw=0.8)
+    ax2.axvline(breakeven, color="#2F6DB5", lw=0.9, ls=":")
+    ax2.text(breakeven, 190, f" k > {breakeven:.1f}이면\n 원본보다 많이 저장", color="#2F6DB5", fontsize=9, va="top")
+    for k in ks:
+        kk = min(k, r)
+        ax2.plot(kk, tail[kk - 1] * 100, "o", color="#C8423A", ms=5)
+        ax2.annotate(f"k={kk}: {tail[kk - 1]:.1%}", (kk, tail[kk - 1] * 100), textcoords="offset points",
+                     xytext=(7, 3), fontsize=9, color="#C8423A")
+    ax2.set_ylim(0, 205)
+    ax2.set_title("k를 늘리면 오차는 줄고 저장 숫자는 늘어난다", fontsize=11)
+    ax2.set_xlabel("남긴 성분 개수 k")
+    ax2.set_ylabel("%")
+    ax2.grid(True, color="#D9E2E6", lw=0.6)
+    ax2.legend(fontsize=9, loc="upper left")
+    fig.tight_layout()
+    return fig

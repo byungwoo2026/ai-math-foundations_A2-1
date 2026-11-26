@@ -119,6 +119,48 @@ def run_step2() -> None:
               f"오차 {err_pct:.2e}% (기준 5%), 고유벡터 방향 일치도 |cos| = {cos:.8f}")
 
 
+# ============================================================
+# Step 3. SVD 이미지 압축
+# ============================================================
+def run_step3() -> None:
+    """흑백 이미지를 SVD로 압축·복원한 그림 3장을 저장하고, 계산이 맞는지 확인한다."""
+    print("\n[Step 3] SVD 이미지 압축 (k = 10, 50, 100 비교)")
+    image = la.load_grayscale_image(size=128)       # 내장 공개 도메인 사진 → 128×128 흑백
+    print(f"  이미지: shape {image.shape}, 값 범위 {image.min():.3f} ~ {image.max():.3f}")
+
+    ks = (10, 50, 100)
+    for filename, fig in [("svd_compression.png", la.plot_svd_compression(image, ks)),
+                          ("svd_layers.png", la.plot_svd_layers(image, n_layers=5)),
+                          ("svd_singular_values.png", la.plot_singular_values(image, ks))]:
+        save_figure(fig, filename)
+        plt.close(fig)
+        print(f"  그림 저장: outputs/{filename}")
+
+    results = [la.svd_compress(image, k) for k in ks]
+    for res in results:
+        print(f"  k={res['k_used']:>3}: 저장 {res['stored_numbers']:>6,}개 ({res['storage_ratio']:6.1%}), "
+              f"오차 {res['relative_error']:.4%}, 에너지 {res['energy']:.4%}")
+
+    errors = [res["relative_error"] for res in results]
+    check("k가 클수록 복원 오차 감소", all(a > b for a, b in zip(errors, errors[1:])),
+          " > ".join(f"{e:.2%}" for e in errors))
+
+    gap = max(abs(res["relative_error"] - res["relative_error_from_sigma"]) for res in results)
+    check("복원 오차 = √(버린 σ² 합 / 전체 σ² 합) (Eckart–Young)", gap < 1e-10, f"최대 차이 {gap:.1e}")
+
+    full = la.svd_compress(image, image.shape[0])
+    check("모든 성분(k = 128)으로 복원하면 원본과 같음", full["relative_error"] < 1e-12,
+          f"오차 {full['relative_error']:.1e}")
+
+    # Step 2와 연결: σ₁² = AᵀA의 최대 고유값 → 직접 만든 Power Iteration으로 σ₁을 다시 구해 본다
+    np.random.seed(42)
+    sigma1_power = np.sqrt(la.power_iteration(image.T @ image, tol=1e-10)["eigenvalue"])
+    sigma1_svd = results[0]["singular_values"][0]
+    rel = abs(sigma1_power - sigma1_svd) / sigma1_svd
+    check("σ₁ (np.linalg.svd) = √(Power Iteration으로 구한 AᵀA의 최대 고유값)", rel < 1e-6,
+          f"{sigma1_svd:.6f} vs {sigma1_power:.6f}, 상대 오차 {rel:.1e}")
+
+
 def main() -> int:
     """모든 Step을 차례로 실행하고 통과 개수를 요약한다.
 
@@ -130,6 +172,7 @@ def main() -> int:
 
     run_step1()
     run_step2()
+    run_step3()
 
     n_pass = sum(passed for _, passed in RESULTS)
     print(f"\n전체: {n_pass}/{len(RESULTS)} 통과")
