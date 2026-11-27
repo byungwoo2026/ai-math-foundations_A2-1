@@ -17,6 +17,7 @@ import numpy as np
 
 from src import calculus as cal
 from src import linear_algebra as la
+from src import optimizer as opt
 from src.plot_utils import save_figure, setup_korean_font
 
 np.random.seed(42)  # 재현성: 과제 규칙대로 시드 고정
@@ -219,6 +220,89 @@ def run_step4() -> None:
           f"각도 평균 {info_e['angles'].mean():.4f}°, 90°와 최대 차이 {info_e['max_angle_error']:.1e}°")
 
 
+# ============================================================
+# Step 6. 경사하강법과 Momentum
+# ============================================================
+def final_distance(optimizer: opt.VanillaGD | opt.Momentum, grad_f, start=(5.0, 5.0), n_steps: int = 100) -> float:
+    """옵티마이저로 n_steps번 걸은 뒤 원점까지의 거리 (그래도 넘칠 만큼 발산해 일찍 멈췄으면 inf).
+
+    발산한 크기도 숫자로 보이도록 멈춤 기준(max_norm)을 1e100으로 넉넉히 둔다
+    (여기서 쓰는 경우 중 가장 큰 값도 약 1e96이라 float 범위 1e308 안에 들어온다).
+    """
+    path = opt.run_optimizer(optimizer, grad_f, start, n_steps, max_norm=1e100)
+    if path.shape[1] < n_steps + 1:          # max_norm을 넘어 멈춤 = 발산
+        return float("inf")
+    return float(opt.distances(path)[-1])
+
+
+def save(fig: plt.Figure, filename: str) -> None:
+    """그림을 outputs/에 저장하고 닫는다."""
+    save_figure(fig, filename)
+    plt.close(fig)
+    print(f"  그림 저장: outputs/{filename}")
+
+
+def run_step6() -> None:
+    """Vanilla GD와 Momentum을 실행해 과제 기준을 확인하고 경로 그림 5장을 저장한다."""
+    print("\n[Step 6] 경사하강법(Vanilla GD)과 Momentum (출발점 (5, 5))")
+    start = (5.0, 5.0)
+
+    # (1) 과제 기준: f = x² + y², lr = 0.1, 100회 → 원점 반경 0.1 이내
+    gd_path = opt.run_optimizer(opt.VanillaGD(lr=0.1), opt.bowl_grad, start, 100)
+    end = gd_path[:, -1]
+    dist = float(opt.distances(gd_path)[-1])
+    check("Vanilla GD (x² + y², lr = 0.1, 100회) 원점 반경 0.1 이내", dist <= 0.1,
+          f"위치 ({end[0]:.1e}, {end[1]:.1e}), 거리 {dist:.1e}, {opt.steps_to_stay(gd_path)}번째부터 반경 안")
+    save(opt.plot_gd_path(opt.bowl, opt.bowl_grad, "f = x² + y²", start, lr=0.1, n_steps=100),
+         "gd_path.png")
+
+    # Step 4의 수치 Gradient로 돌려도 같은 경로인지 (해석적 Gradient 2x, 2y와 비교)
+    num_path = opt.run_optimizer(opt.VanillaGD(lr=0.1), lambda p: cal.numerical_gradient(opt.bowl, p), start, 100)
+    gap = float(np.max(np.abs(num_path - gd_path)))
+    check("수치 Gradient(Step 4)로 돌린 경로 = 해석적 Gradient 경로", gap <= 1e-6, f"100걸음 최대 차이 {gap:.1e}")
+
+    # (2) 발산: 한 걸음 배율이 (1 − 2·lr), 타원의 y 방향은 (1 − 20·lr)
+    d = {lr: final_distance(opt.VanillaGD(lr), opt.bowl_grad) for lr in (0.9, 1.0, 1.1)}
+    d0 = float(np.linalg.norm(start))
+    check("GD 발산 경계 x² + y²: lr = 1", d[0.9] <= 0.1 and abs(d[1.0] - d0) < 1e-9 and d[1.1] > 1e6,
+          f"lr 0.9 → {d[0.9]:.1e} (수렴), lr 1.0 → {d[1.0]:.2f} (제자리 왕복), lr 1.1 → {d[1.1]:.1e} (발산)")
+    e = {lr: final_distance(opt.VanillaGD(lr), opt.ellipse_grad) for lr in (0.09, 0.11, 0.5)}
+    check("GD 발산 경계 x² + 10y²: lr = 0.1", e[0.09] <= 0.1 and e[0.11] > 1e6 and e[0.5] > 1e6,
+          f"lr 0.09 → {e[0.09]:.1e} (수렴), lr 0.11 → {e[0.11]:.1e}, lr 0.5 → {e[0.5]:.1e} (발산)")
+    save(opt.plot_learning_rates(start), "gd_learning_rate.png")
+
+    # (3) Momentum: 둥근 그릇 x² + y²
+    fig, info_r = opt.plot_comparison(opt.bowl, opt.bowl_grad, "f = x² + y²", start, [0.1], 100,
+                                      notes=["둥근 그릇에선 GD가 빠르다"])
+    r = info_r[0.1]
+    check("Momentum (x² + y², lr = 0.1, β = 0.9, 100회) 원점 반경 0.1 이내", r["mom_end"] <= 0.1,
+          f"거리 {r['mom_end']:.3f} (GD {r['gd_end']:.1e}). 반경 안에 머물기 시작: GD {r['gd_stay']}회, "
+          f"Momentum {r['mom_stay']}회")
+    save(fig, "optimizer_compare_round.png")
+
+    # (4) Momentum: 길쭉한 그릇 x² + 10y²
+    fig, info_e = opt.plot_comparison(opt.ellipse_bowl, opt.ellipse_grad, "f = x² + 10y²", start, [0.01, 0.05], 200,
+                                      notes=["Momentum이 빠르다", "과제 예시 lr, GD가 빠르다"])
+    a, b = info_e[0.01], info_e[0.05]
+    check("x² + 10y², lr = 0.01: Momentum이 GD보다 먼저 반경 0.1 안에 머묾",
+          a["mom_stay"] is not None and a["gd_stay"] is not None and a["mom_stay"] < a["gd_stay"],
+          f"GD {a['gd_stay']}회 vs Momentum {a['mom_stay']}회 (참고: lr = 0.05에서는 GD {b['gd_stay']}회 vs "
+          f"Momentum {b['mom_stay']}회)")
+    save(fig, "optimizer_compare_ellipse.png")
+
+    m = final_distance(opt.Momentum(lr=0.15, beta=0.9), opt.ellipse_grad, n_steps=200)
+    g = final_distance(opt.VanillaGD(lr=0.15), opt.ellipse_grad, n_steps=200)
+    check("x² + 10y², lr = 0.15: GD는 발산하지만 Momentum은 수렴", g > 1e6 and m <= 0.1,
+          f"GD {g:.1e} (발산), Momentum {m:.1e}")
+
+    # (5) lr을 바꿔 가며 누가 빠른가
+    lrs = np.round(np.arange(0.003, 0.2001, 0.001), 3)
+    fig, sweep = opt.plot_lr_sweep(opt.ellipse_grad, "f = x² + 10y²", start, lrs, marks=(0.01, 0.05))
+    save(fig, "optimizer_lr_sweep.png")
+    print(f"    참고: Momentum이 빠른 구간 lr < {sweep['crossover']:g}, GD 발산 lr ≥ {sweep['gd_limit']:g}, "
+          f"Momentum 발산 lr ≥ {sweep['mom_limit']:g}, Momentum 이론 걸음 수 약 {sweep['theory']:.1f}회")
+
+
 def main() -> int:
     """모든 Step을 차례로 실행하고 통과 개수를 요약한다.
 
@@ -232,6 +316,7 @@ def main() -> int:
     run_step2()
     run_step3()
     run_step4()
+    run_step6()
 
     n_pass = sum(passed for _, passed in RESULTS)
     print(f"\n전체: {n_pass}/{len(RESULTS)} 통과")
