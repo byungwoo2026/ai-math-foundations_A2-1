@@ -8,7 +8,10 @@
 """
 from __future__ import annotations
 
+import ast
+import json
 import sys
+from pathlib import Path
 
 import matplotlib
 matplotlib.use("Agg")  # 창을 띄우지 않고 파일로만 저장 (터미널·서버에서도 동작)
@@ -303,6 +306,72 @@ def run_step6() -> None:
           f"Momentum 발산 lr ≥ {sweep['mom_limit']:g}, Momentum 이론 걸음 수 약 {sweep['theory']:.1f}회")
 
 
+# ============================================================
+# 제출 규칙 점검 (금지 라이브러리, Docstring, eig 사용 위치)
+# ============================================================
+FORBIDDEN = {"torch", "tensorflow", "jax", "sklearn", "keras"}
+
+
+def code_sources() -> dict[str, str]:
+    """검사할 코드 전부: src/*.py, run_all.py, 노트북의 코드 칸 (이름 → 소스 문자열)."""
+    root = Path(__file__).resolve().parent
+    sources = {f"src/{p.name}": p.read_text(encoding="utf-8") for p in sorted((root / "src").glob("*.py"))}
+    sources["run_all.py"] = Path(__file__).read_text(encoding="utf-8")
+    for nb_path in sorted((root / "notebooks").glob("*.ipynb")):
+        cells = json.loads(nb_path.read_text(encoding="utf-8"))["cells"]
+        for i, cell in enumerate(cells):
+            if cell["cell_type"] == "code":
+                sources[f"notebooks/{nb_path.name} 칸 {i}"] = "".join(cell["source"])
+    return sources
+
+
+def run_rules_check() -> None:
+    """과제 규칙을 코드에서 직접 찾아 확인한다 (사람이 눈으로 훑는 대신 구문 트리로)."""
+    print("\n[제출 규칙] 코드 전체를 구문 분석(AST)해서 확인")
+    trees = {name: ast.parse(src) for name, src in code_sources().items()}
+
+    # (1) 금지 라이브러리 import 없음
+    imported = set()
+    for tree in trees.values():
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported |= {alias.name.split(".")[0] for alias in node.names}
+            elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+                imported.add(node.module.split(".")[0])
+    bad = sorted(imported & FORBIDDEN)
+    check("금지 라이브러리 (PyTorch·TensorFlow·JAX·scikit-learn) 미사용", not bad,
+          f"사용한 라이브러리: {', '.join(sorted(imported - {'__future__'}))}" + (f" / 금지: {bad}" if bad else ""))
+
+    # (2) 모든 함수·클래스에 Docstring
+    missing, total = [], 0
+    for name, tree in trees.items():
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                total += 1
+                if ast.get_docstring(node) is None:
+                    missing.append(f"{name}: {node.name}")
+    check("모든 함수·클래스에 Docstring", not missing,
+          f"{total}개 중 빠진 것 {len(missing)}개" + (f": {missing}" if missing else ""))
+
+    # (3) np.linalg.eig는 검증 함수(verify_with_eig) 안에서만
+    eig_users = []
+
+    def find_eig(node: ast.AST, name: str, func: str) -> None:
+        """구문 트리를 내려가며 .eig 계열 호출을 찾고, 그것을 감싼 함수 이름을 기록한다."""
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            func = node.name
+        if isinstance(node, ast.Attribute) and node.attr in {"eig", "eigh", "eigvals", "eigvalsh"}:
+            eig_users.append(f"{name}: {func}")
+        for child in ast.iter_child_nodes(node):
+            find_eig(child, name, func)
+
+    for name, tree in trees.items():
+        find_eig(tree, name, "(함수 밖)")
+    eig_users = sorted(set(eig_users))
+    check("np.linalg.eig는 검증 코드에서만 사용", eig_users == ["run_all.py: verify_with_eig"],
+          f"사용 위치: {eig_users}")
+
+
 def main() -> int:
     """모든 Step을 차례로 실행하고 통과 개수를 요약한다.
 
@@ -317,6 +386,7 @@ def main() -> int:
     run_step3()
     run_step4()
     run_step6()
+    run_rules_check()
 
     n_pass = sum(passed for _, passed in RESULTS)
     print(f"\n전체: {n_pass}/{len(RESULTS)} 통과")

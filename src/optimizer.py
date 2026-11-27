@@ -68,6 +68,11 @@ class VanillaGD:
     name = "Vanilla GD"
 
     def __init__(self, lr: float = 0.1) -> None:
+        """학습률을 정한다.
+
+        Args:
+            lr: 학습률 (한 걸음의 크기).
+        """
         self.lr = lr
 
     def reset(self) -> None:
@@ -108,6 +113,12 @@ class Momentum:
     name = "Momentum"
 
     def __init__(self, lr: float = 0.1, beta: float = 0.9) -> None:
+        """학습률과 관성 계수를 정한다. 속도 v는 첫 step에서 0으로 만든다.
+
+        Args:
+            lr: 학습률.
+            beta: 관성 계수 β (이전 속도를 얼마나 남길지).
+        """
         self.lr = lr
         self.beta = beta
         self.v: np.ndarray | None = None
@@ -399,6 +410,7 @@ def plot_comparison(f: Function, grad_f: Function, f_label: str, start: tuple[fl
                     "gd_end": float(distances(gd)[-1]), "mom_end": float(distances(mom)[-1])}
 
         def stay_text(k: int | None) -> str:
+            """범례에 쓸 "몇 번째부터 반경 안" 문구."""
             return f"{k}번째부터 반경 {radius:g} 안" if k is not None else f"{n_steps}회 안에 못 들어감"
 
         note = f" — {notes[r]}" if notes else ""
@@ -470,6 +482,7 @@ def plot_lr_sweep(grad_f: Function, f_label: str, start: tuple[float, float], lr
             steps[i] = np.nan if k is None else k
 
     def first_fail(steps: np.ndarray) -> float:
+        """처음으로 도착하지 못한(NaN) lr. 모두 도착했으면 NaN."""
         bad = np.nonzero(np.isnan(steps))[0]
         return float(lrs[bad[0]]) if bad.size else float("nan")
 
